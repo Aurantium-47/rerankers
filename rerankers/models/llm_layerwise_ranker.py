@@ -98,6 +98,7 @@ class LLMLayerWiseRanker(BaseRanker):
             "input_ids"
         ]
         inputs = []
+        model_type = getattr(getattr(self.model, "config", None), "model_type", None)
         for query, passage in pairs:
             query_inputs = self.tokenizer(
                 f"A: {query}",
@@ -123,6 +124,20 @@ class LLMLayerWiseRanker(BaseRanker):
                 return_token_type_ids=False,
                 add_special_tokens=False,
             )
+            # CostWiseGemma compresses only the passage. Include the retained
+            # separators in the protected query and prompt lengths. Other
+            # layerwise models, such as MiniCPM, do not accept these arguments.
+            if model_type == "cost_wise_gemma":
+                query_length = 1 + len(query_inputs["input_ids"])
+                second_length = len(item["input_ids"]) - query_length
+                if self.tokenizer.truncation_side == "left":
+                    separator_length = max(
+                        0, second_length - len(passage_inputs["input_ids"])
+                    )
+                else:
+                    separator_length = min(len(sep_inputs), second_length)
+                item["query_lengths"] = query_length + separator_length
+                item["prompt_lengths"] = len(sep_inputs) + len(prompt_inputs)
             item["input_ids"] = item["input_ids"] + sep_inputs + prompt_inputs
             item["attention_mask"] = [1] * len(item["input_ids"])
             inputs.append(item)
