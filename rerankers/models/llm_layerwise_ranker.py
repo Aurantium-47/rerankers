@@ -135,6 +135,23 @@ class LLMLayerWiseRanker(BaseRanker):
             return_tensors="pt",
         )
 
+    def _get_batch_scores(self, inputs):
+        outputs = self.model(**inputs, return_dict=True, **self.params)
+        logits = outputs.logits[-1]
+        # Lightweight models can shorten the sequence during compression. Their
+        # output mask, when present, describes the positions in these logits.
+        attention_masks = getattr(outputs, "attention_masks", None)
+        attention_mask = (
+            attention_masks[-1]
+            if attention_masks is not None
+            else inputs["attention_mask"]
+        )
+        # Inputs are right padded, including single inputs padded to a multiple
+        # of eight. Score the final prompt token, not a padding position.
+        last_token_indices = attention_mask.long().sum(dim=1) - 1
+        batch_indices = torch.arange(logits.shape[0], device=logits.device)
+        return logits[batch_indices, last_token_indices].float()
+
     @torch.inference_mode()
     def rank(
         self,
@@ -165,16 +182,7 @@ class LLMLayerWiseRanker(BaseRanker):
             inputs = self._get_inputs(batch, max_sequence_length=max_sequence_length)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            outputs = self.model(**inputs, return_dict=True, **self.params)
-            all_scores = [
-                scores[:, -1]
-                .view(
-                    -1,
-                )
-                .float()
-                for scores in outputs[0]
-            ]
-            batch_scores = all_scores[-1].cpu().numpy().tolist()
+            batch_scores = self._get_batch_scores(inputs).cpu().tolist()
 
             scores.extend(batch_scores)
 
@@ -193,15 +201,6 @@ class LLMLayerWiseRanker(BaseRanker):
         )
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        outputs = self.model(**inputs, return_dict=True, **self.params)
-        all_scores = [
-            scores[:, -1]
-            .view(
-                -1,
-            )
-            .float()
-            for scores in outputs[0]
-        ]
-        score = all_scores[-1].item()
+        score = self._get_batch_scores(inputs).item()
 
         return score
